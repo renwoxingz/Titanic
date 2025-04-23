@@ -1,0 +1,18 @@
+{
+    "learning_rate": 1e-3,
+    "batch_size": 16,
+    "train_batch_size": 16,
+    "test_batch_size": 16,
+    "num_epochs": 200,
+    "eval_steps": 100,
+    "save_summary_steps": 100,
+
+    "model_path": "./model/net.pt",
+
+    "columns": ["Pclass", "Sex", "SibSp", "Parch"],
+    "input_dim": 4,
+
+    
+
+    "gpu": 0
+}

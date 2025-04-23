@@ -1,202 +1,132 @@
-"""Train the model"""
-
-import argparse
-import logging
 import os
-
+import argparse
 import numpy as np
-import torch
-import torch.optim as optim
-from tqdm import trange
-
-import utils
+import pandas as pd
 import net
-from process_data import TitanicDataset
-from evaluate import evaluate
+import torch
+from process_data import TitanicDataset, collate_fn
+from torch.optim import Adam
+from torch.utils.data import DataLoader
+from utils import *
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--data_dir', default='data',
-                    help="Directory containing the dataset")
-parser.add_argument('--model_dir', default='experiments/base_model',
-                    help="Directory containing params.json")
-parser.add_argument('--restore_file', default=None,
-                    help="Optional, name of the file in --model_dir containing weights to reload before \
-                    training")  # 'best' or 'train'
+def train(params, model, train_features, val_features):
+    optimizer = Adam(model.parameters(), lr=1e-3)
+    model.zero_grad()
 
+    train_dataloader = DataLoader(train_features, batch_size=params.train_batch_size,
+                            shuffle=True, drop_last=True, )
 
-def train(model, optimizer, loss_fn, data_iterator, metrics, params, num_steps):
-    """Train the model on `num_steps` batches
-
-    Args:
-        model: (torch.nn.Module) the neural network
-        optimizer: (torch.optim) optimizer for parameters of model
-        loss_fn: a function that takes batch_output and batch_labels and computes the loss for the batch
-        data_iterator: (generator) a generator that generates batches of data and labels
-        metrics: (dict) a dictionary of functions that compute a metric using the output and labels of each batch
-        params: (Params) hyperparameters
-        num_steps: (int) number of batches to train on, each of size params.batch_size
-    """
-
-    # set model to training mode
-    model.train()
-
-    # summary for current training loop and a running average object for loss
-    summ = []
-    loss_avg = utils.RunningAverage()
-
-    # Use tqdm for progress bar
-    t = trange(num_steps)
-    for i in t:
-        # fetch the next training batch
-        train_batch, labels_batch = next(data_iterator)
-
-        # compute model output and loss
-        output_batch = model(train_batch)
-        loss = loss_fn(output_batch, labels_batch)
-
-        # clear previous gradients, compute gradients of all variables wrt loss
-        optimizer.zero_grad()
-        loss.backward()
-
-        # performs updates using calculated gradients
-        optimizer.step()
-
-        # Evaluate summaries only once in a while
-        if i % params.save_summary_steps == 0:
-            # extract data from torch Variable, move to cpu, convert to numpy arrays
-            output_batch = output_batch.data.cpu().numpy()
-            labels_batch = labels_batch.data.cpu().numpy()
-
-            # compute all metrics on this batch
-            summary_batch = {metric: metrics[metric](output_batch, labels_batch)
-                             for metric in metrics}
-            summary_batch['loss'] = loss.item()
-            summ.append(summary_batch)
-
-        # update the average loss
-        loss_avg.update(loss.item())
-        t.set_postfix(loss='{:05.3f}'.format(loss_avg()))
-
-    # compute mean of all metrics in summary
-    metrics_mean = {metric: np.mean([x[metric]
-                                     for x in summ]) for metric in summ[0]}
-    metrics_string = " ; ".join("{}: {:05.3f}".format(k, v)
-                                for k, v in metrics_mean.items())
-    logging.info("- Train metrics: " + metrics_string)
-
-
-def train_and_evaluate(model, train_data, val_data, optimizer, loss_fn, metrics, params, model_dir, restore_file=None):
-    """Train the model and evaluate every epoch.
-
-    Args:
-        model: (torch.nn.Module) the neural network
-        train_data: (dict) training data with keys 'data' and 'labels'
-        val_data: (dict) validaion data with keys 'data' and 'labels'
-        optimizer: (torch.optim) optimizer for parameters of model
-        loss_fn: a function that takes batch_output and batch_labels and computes the loss for the batch
-        metrics: (dict) a dictionary of functions that compute a metric using the output and labels of each batch
-        params: (Params) hyperparameters
-        model_dir: (string) directory containing config, weights and log
-        restore_file: (string) optional- name of file to restore from (without its extension .pth.tar)
-    """
-    # reload weights from restore_file if specified
-    if restore_file is not None:
-        restore_path = os.path.join(
-            args.model_dir, args.restore_file + '.pth.tar')
-        logging.info("Restoring parameters from {}".format(restore_path))
-        utils.load_checkpoint(restore_path, model, optimizer)
-
-    best_val_acc = 0.0
-
+    num_step = 0
     for epoch in range(params.num_epochs):
-        # Run one epoch
-        logging.info("Epoch {}/{}".format(epoch + 1, params.num_epochs))
+        model.zero_grad()
+        for _, features, labels in train_dataloader:
+            model.train()   # Switch to the train mode
 
-        # compute number of batches in one epoch (one full pass over the training set)
-        num_steps = (params.train_size + 1) // params.batch_size
-        train_data_iterator = data_loader.data_iterator(
-            train_data, params, shuffle=True)
-        train(model, optimizer, loss_fn, train_data_iterator,
-              metrics, params, num_steps)
+            # Move inputs to the same device of our model.
+            features = torch.tensor(features).to(params.device)
+            labels = torch.tensor(labels).to(params.device)
 
-        # Evaluate for one epoch on validation set
-        num_steps = (params.val_size + 1) // params.batch_size
-        val_data_iterator = data_loader.data_iterator(
-            val_data, params, shuffle=False)
-        val_metrics = evaluate(
-            model, loss_fn, val_data_iterator, metrics, params, num_steps)
+            outputs = model(features)
+            loss = net.loss_fn(outputs, labels)
 
-        val_acc = val_metrics['accuracy']
-        is_best = val_acc >= best_val_acc
+            # Update the parameters of the model
+            loss.backward()
+            optimizer.step()
 
-        # Save weights
-        utils.save_checkpoint({'epoch': epoch + 1,
-                               'state_dict': model.state_dict(),
-                               'optim_dict': optimizer.state_dict()},
-                              is_best=is_best,
-                              checkpoint=model_dir)
+            # The gradient of the model should be zero before next batch
+            model.zero_grad()
 
-        # If best_eval, best_save_path
-        if is_best:
-            logging.info("- Found new best accuracy")
-            best_val_acc = val_acc
+            num_step += 1
+            if num_step % params.eval_steps == 0 and num_step != 0:
+                metrics_mean = evaluate(params, model, val_features)
+                print('Epoch: {:3} | Step: {:6} | Loss: {:8.4f} | ac: {:5.2f}'.format(
+                    epoch + 1, num_step, metrics_mean['loss'], metrics_mean['accuracy']))
+                os.makedirs(os.path.dirname(params.model_path), exist_ok=True)
+                torch.save(model.state_dict(), params.model_path) # save the model
 
-            # Save best val metrics in a json file in the model directory
-            best_json_path = os.path.join(
-                model_dir, "metrics_val_best_weights.json")
-            utils.save_dict_to_json(val_metrics, best_json_path)
 
-        # Save latest val metrics in a json file in the model directory
-        last_json_path = os.path.join(
-            model_dir, "metrics_val_last_weights.json")
-        utils.save_dict_to_json(val_metrics, last_json_path)
+def evaluate(params, model, val_features):
+    # set model to evaluation mode
+    model.eval()
+
+    metrics = net.metrics
+    test_dataloader = DataLoader(val_features, batch_size=params.test_batch_size)
+
+    # summary for current eval loop
+    summ = []
+
+    # compute metrics over the dataset
+    for _, features, labels in test_dataloader:
+        # compute model output
+        outputs = model(features)
+        loss = net.loss_fn(outputs, labels)
+
+        # extract data from torch Variable, move to cpu, convert to numpy arrays
+        # outputs = outputs.data.cpu().numpy()
+        # labels = labels.data.cpu().numpy()
+
+        # compute all metrics on this batch
+        summary_batch = {metric: metrics[metric](outputs, labels)
+                         for metric in metrics}
+        summary_batch['loss'] = loss.item()
+        summ.append(summary_batch)
+    # compute mean of all metrics in summary
+    metrics_mean = {metric:np.mean([x[metric] for x in summ]) for metric in summ[0]} 
+    metrics_string = " ; ".join("{}: {:05.3f}".format(k, v) for k, v in metrics_mean.items())
+    #logging.info("- Eval metrics : " + metrics_string)
+    return metrics_mean
+
+
+def test(params, model, test_features):
+    # set model to evaluation mode
+    model.eval()
+
+    test_dataloader = DataLoader(test_features, batch_size=params.test_batch_size)
+    PassengerId = []
+    Survived = []
+
+    # compute metrics over the dataset
+    for ids, features, _ in test_dataloader:
+        # compute model output
+        outputs = model(features)
+        outputs = (outputs > 0.5).int()
+        PassengerId.append(ids.view(-1))
+        Survived.append(outputs.view(-1))
+    
+    PassengerId = torch.concat(PassengerId, dim=0).detach().numpy()
+    Survived = torch.concat(Survived, dim=0).detach().numpy()
+
+    pred = pd.DataFrame({'PassengerId': PassengerId, 'Survived': Survived})
+    pred.to_csv('./data/processed/pred.csv', index=False)
+    print('test finished!')
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--test', help='Test on the testset.', action='store_true')
+    args = parser.parse_args()
+
+    params = Params('model/params.json')
+
+    # Specify the device. If you has a GPU, the training process will be accelerated.
+    device = torch.device('cuda:{}'.format(params.gpu) if torch.cuda.is_available() else 'cpu')
+    params.device = device
+
+    # Load the datasets
+    train_features = TitanicDataset(params, './data/processed/train.csv')
+    val_features = TitanicDataset(params, './data/processed/test.csv')
+    test_features = TitanicDataset(params, './data/origin/test.csv')
+
+    model = net.Net(params)
+    model = model.to(params.device)   # move the model into GPU if GPU is available.
+
+    if not args.test:
+        train(params, model, train_features, val_features)
+    else:
+        model.load_state_dict(torch.load(params.model_path))
+        test(params, model, test_features)
 
 
 if __name__ == '__main__':
-
-    # Load the parameters from json file
-    args = parser.parse_args()
-    json_path = os.path.join(args.model_dir, 'params.json')
-    assert os.path.isfile(
-        json_path), "No json configuration file found at {}".format(json_path)
-    params = utils.Params(json_path)
-
-    # use GPU if available
-    params.cuda = torch.cuda.is_available()
-
-    # Set the random seed for reproducible experiments
-    torch.manual_seed(230)
-    if params.cuda:
-        torch.cuda.manual_seed(230)
-
-    # Set the logger
-    utils.set_logger(os.path.join(args.model_dir, 'train.log'))
-
-    # Create the input data pipeline
-    logging.info("Loading the datasets...")
-
-    # load data
-    data_loader = DataLoader(args.data_dir, params)
-    data = data_loader.load_data(['train', 'val'], args.data_dir)
-    train_data = data['train']
-    val_data = data['val']
-
-    # specify the train and val dataset sizes
-    params.train_size = train_data['size']
-    params.val_size = val_data['size']
-
-    logging.info("- done.")
-
-    # Define the model and optimizer
-    model = net.Net(params).cuda() if params.cuda else net.Net(params)
-    optimizer = optim.Adam(model.parameters(), lr=params.learning_rate)
-
-    # fetch loss function and metrics
-    loss_fn = net.loss_fn
-    metrics = net.metrics
-
-    # Train the model
-    logging.info("Starting training for {} epoch(s)".format(params.num_epochs))
-    train_and_evaluate(model, train_data, val_data, optimizer, loss_fn, metrics, params, args.model_dir,
-                       args.restore_file)
+    main()

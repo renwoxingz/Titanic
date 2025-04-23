@@ -27,8 +27,10 @@ def loss_fn(outputs, labels):
 
 
 def accuracy(outputs, labels):
-    
-    return 
+    with torch.no_grad():  # 关闭梯度计算
+        y_pred_class = (outputs > 0.5).float()  # 将概率值转换为类别标签
+        accuracy = (y_pred_class == labels).float().mean().item()  # 计算准确率
+        return accuracy
 
 
 # maintain all metrics required in this dictionary- these are used in the training and evaluation loops
