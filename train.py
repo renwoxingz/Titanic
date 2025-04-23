@@ -10,13 +10,13 @@ import torch.optim as optim
 from tqdm import trange
 
 import utils
-import model.net as net
-from model.data_loader import DataLoader
+import net
+from process_data import TitanicDataset
 from evaluate import evaluate
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--data_dir', default='data/small',
+parser.add_argument('--data_dir', default='data',
                     help="Directory containing the dataset")
 parser.add_argument('--model_dir', default='experiments/base_model',
                     help="Directory containing params.json")
