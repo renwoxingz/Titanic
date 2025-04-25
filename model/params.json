@@ -3,11 +3,12 @@
     "batch_size": 16,
     "train_batch_size": 16,
     "test_batch_size": 16,
-    "num_epochs": 200,
+    "num_epochs": 20,
     "eval_steps": 100,
     "save_summary_steps": 100,
 
-    "model_path": "./model/net.pt",
+    "model_dir": "./model",
+    "data_dir": "./data",
 
     "columns": ["Pclass", "Sex", "SibSp", "Parch"],
     "input_dim": 4,

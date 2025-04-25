@@ -2,14 +2,16 @@ import os
 import numpy as np
 import pandas as pd
 import torch
+import argparse
+from utils import Params
 from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
 
-def spilt():
-    df = pd.read_csv('./data/origin/train.csv')
+def spilt(params):
+    df = pd.read_csv(os.path.join(params.data_dir, 'origin', 'train.csv'))
     data_train, data_test = train_test_split(df, test_size=0.2, random_state=42)
-    data_train.to_csv('./data/processed/train.csv', index=False)
-    data_test.to_csv('./data/processed/test.csv', index=False)
+    data_train.to_csv(os.path.join(params.data_dir, 'processed', 'train.csv'), index=False)
+    data_test.to_csv(os.path.join(params.data_dir, 'processed', 'test.csv'), index=False)
 
 def collate_fn(batch):
     features = [p[0] for p in batch]
@@ -42,4 +44,9 @@ class TitanicDataset(Dataset):
         return self.id[index], self.features[index], self.label[index]
     
 if __name__ == '__main__':
-    spilt()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--params_path', default='model/params.json', help="params json path")
+    args = parser.parse_args()
+
+    params = Params(args.params_path)
+    spilt(params)

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import net
 import torch
+from tqdm import tqdm
 from process_data import TitanicDataset, collate_fn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
@@ -17,15 +18,15 @@ def train(params, model, train_features, val_features):
     train_dataloader = DataLoader(train_features, batch_size=params.train_batch_size,
                             shuffle=True, drop_last=True, )
 
-    num_step = 0
+
     for epoch in range(params.num_epochs):
         model.zero_grad()
-        for _, features, labels in train_dataloader:
+        for _, features, labels in tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{params.num_epochs}"):
             model.train()   # Switch to the train mode
 
             # Move inputs to the same device of our model.
-            features = torch.tensor(features).to(params.device)
-            labels = torch.tensor(labels).to(params.device)
+            features = features.clone().detach().requires_grad_(True).to(params.device)
+            labels = labels.clone().detach().requires_grad_(True).to(params.device)
 
             outputs = model(features)
             loss = net.loss_fn(outputs, labels)
@@ -36,14 +37,14 @@ def train(params, model, train_features, val_features):
 
             # The gradient of the model should be zero before next batch
             model.zero_grad()
+        
+        evaluate(params, model, val_features)
+        #logging.info('Epoch: {:3} | Loss: {:8.4f} | ac: {:5.2f}'.format(
+        #        epoch + 1, metrics_mean['loss'], metrics_mean['accuracy']))
+        os.makedirs(os.path.dirname(os.path.join(params.model_dir, 'net.pt')), exist_ok=True)
+        torch.save(model.state_dict(), os.path.join(params.model_dir, 'net.pt')) # save the model
 
-            num_step += 1
-            if num_step % params.eval_steps == 0 and num_step != 0:
-                metrics_mean = evaluate(params, model, val_features)
-                print('Epoch: {:3} | Step: {:6} | Loss: {:8.4f} | ac: {:5.2f}'.format(
-                    epoch + 1, num_step, metrics_mean['loss'], metrics_mean['accuracy']))
-                os.makedirs(os.path.dirname(params.model_path), exist_ok=True)
-                torch.save(model.state_dict(), params.model_path) # save the model
+
 
 
 def evaluate(params, model, val_features):
@@ -57,7 +58,7 @@ def evaluate(params, model, val_features):
     summ = []
 
     # compute metrics over the dataset
-    for _, features, labels in test_dataloader:
+    for _, features, labels in tqdm(test_dataloader, desc=f"evaluating"):
         # compute model output
         outputs = model(features)
         loss = net.loss_fn(outputs, labels)
@@ -74,8 +75,7 @@ def evaluate(params, model, val_features):
     # compute mean of all metrics in summary
     metrics_mean = {metric:np.mean([x[metric] for x in summ]) for metric in summ[0]} 
     metrics_string = " ; ".join("{}: {:05.3f}".format(k, v) for k, v in metrics_mean.items())
-    #logging.info("- Eval metrics : " + metrics_string)
-    return metrics_mean
+    logging.info("- Eval metrics : " + metrics_string)
 
 
 def test(params, model, test_features):
@@ -99,15 +99,19 @@ def test(params, model, test_features):
 
     pred = pd.DataFrame({'PassengerId': PassengerId, 'Survived': Survived})
     pred.to_csv('./data/processed/pred.csv', index=False)
-    print('test finished!')
+    logging.info('test finished!')
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--params_path', default='model/params.json', help="params json path")
     parser.add_argument('--test', help='Test on the testset.', action='store_true')
     args = parser.parse_args()
 
-    params = Params('model/params.json')
+    params = Params(args.params_path)
+
+    # Set the logger
+    set_logger(os.path.join(params.model_dir, 'train.log'))
 
     # Specify the device. If you has a GPU, the training process will be accelerated.
     device = torch.device('cuda:{}'.format(params.gpu) if torch.cuda.is_available() else 'cpu')
@@ -124,7 +128,7 @@ def main():
     if not args.test:
         train(params, model, train_features, val_features)
     else:
-        model.load_state_dict(torch.load(params.model_path))
+        model.load_state_dict(torch.load(os.path.join(params.model_dir, 'net.pt')))
         test(params, model, test_features)
 
 
